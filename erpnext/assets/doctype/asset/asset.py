@@ -1179,6 +1179,8 @@ def make_journal_entry(asset_name):
 
 @frappe.whitelist()
 def make_asset_movement(assets, purpose=None):
+	"""Build an unsaved Asset Movement for the selected assets. Each asset must be visible to the
+	current user through a select or read grant, including User Permissions."""
 	import json
 
 	if isinstance(assets, str):
@@ -1190,6 +1192,7 @@ def make_asset_movement(assets, purpose=None):
 	asset_movement = frappe.new_doc("Asset Movement")
 	asset_movement.quantity = len(assets)
 	for asset in assets:
+		erpnext.require_permission("Asset", asset.get("name"), "select")
 		asset = frappe.get_doc("Asset", asset.get("name"))
 		asset_movement.company = asset.get("company")
 		asset_movement.append(
