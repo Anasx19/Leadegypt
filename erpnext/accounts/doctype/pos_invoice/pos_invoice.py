@@ -8,6 +8,7 @@ from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_link_to_form, getdate, nowdate
 from frappe.utils.nestedset import get_descendants_of
 
+from erpnext import require_permission
 from erpnext.accounts.doctype.loyalty_program.loyalty_program import validate_loyalty_points
 from erpnext.accounts.doctype.payment_request.payment_request import make_payment_request
 from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
@@ -946,6 +947,8 @@ def make_sales_return(source_name, target_doc=None):
 
 @frappe.whitelist()
 def make_merge_log(invoices):
+	"""Build an unsaved POS Invoice Merge Log from the selected invoices. Every invoice must be
+	readable by the current user, since its customer and totals are returned."""
 	import json
 
 	if isinstance(invoices, str):
@@ -953,6 +956,9 @@ def make_merge_log(invoices):
 
 	if len(invoices) == 0:
 		frappe.throw(_("Atleast one invoice has to be selected."))
+
+	for inv in invoices:
+		require_permission("POS Invoice", inv.get("name"), "read")
 
 	merge_log = frappe.new_doc("POS Invoice Merge Log")
 	merge_log.posting_date = getdate(nowdate())
