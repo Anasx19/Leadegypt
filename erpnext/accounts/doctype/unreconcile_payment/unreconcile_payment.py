@@ -10,11 +10,14 @@ from frappe.query_builder import Criterion
 from frappe.query_builder.functions import Abs, Sum
 from frappe.utils.data import comma_and
 
+from erpnext import _refuse, get_unwritable_doctype
 from erpnext.accounts.utils import (
 	cancel_exchange_gain_loss_journal,
 	unlink_ref_doc_from_payment_entries,
 	update_voucher_outstanding,
 )
+
+UNRECONCILABLE_DOCTYPES = ("Payment Entry", "Journal Entry")
 
 
 class UnreconcilePayment(Document):
@@ -197,8 +200,13 @@ def get_linked_advances(company, docname):
 
 @frappe.whitelist()
 def create_unreconcile_doc_for_selection(selections=None):
+	"""Create and submit an Unreconcile Payment for each selected voucher. Only Payment and Journal
+	Entries are accepted, and the current user must be able to write each."""
 	if selections:
 		selections = json.loads(selections)
+		if get_unwritable_doctype(_group_unreconcilable_selections(selections)):
+			_refuse()
+
 		# assuming each row is a unique voucher
 		for row in selections:
 			unrecon = frappe.new_doc("Unreconcile Payment")
@@ -215,3 +223,15 @@ def create_unreconcile_doc_for_selection(selections=None):
 				and x.reference_name == row.get("against_voucher_no")
 			]
 			unrecon.save().submit()
+
+
+def _group_unreconcilable_selections(selections):
+	"""Group the selected voucher numbers by voucher type as given, throwing for a type that cannot be
+	unreconciled before any permission lookup is made for the selection."""
+	by_doctype = {}
+	for row in selections:
+		voucher_type = row.get("voucher_type")
+		if voucher_type not in UNRECONCILABLE_DOCTYPES:
+			frappe.throw(_("{0} cannot be unreconciled").format(voucher_type))
+		by_doctype.setdefault(voucher_type, []).append(row.get("voucher_no"))
+	return by_doctype
