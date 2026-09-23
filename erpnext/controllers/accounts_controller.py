@@ -3688,9 +3688,14 @@ def get_payment_terms(
 def get_payment_term_details(
 	term, posting_date=None, grand_total=None, base_grand_total=None, bill_date=None
 ):
+	"""Return the payment schedule row for a payment term. A term passed by name needs select, and a value
+	that is neither a name nor a row is refused."""
 	term_details = frappe._dict()
 	if isinstance(term, str):
+		erpnext.require_permission("Payment Term", term, "select")
 		term = frappe.get_doc("Payment Term", term)
+	elif not hasattr(term, "payment_term"):
+		erpnext._refuse()
 	else:
 		term_details.payment_term = term.payment_term
 
