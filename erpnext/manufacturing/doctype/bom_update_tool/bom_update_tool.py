@@ -8,8 +8,11 @@ if TYPE_CHECKING:
 	from erpnext.manufacturing.doctype.bom_update_log.bom_update_log import BOMUpdateLog
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.utils import date_diff, get_datetime, now
+
+from erpnext import require_permission
 
 
 class BOMUpdateTool(Document):
@@ -30,13 +33,32 @@ class BOMUpdateTool(Document):
 
 @frappe.whitelist()
 def enqueue_replace_bom(boms: dict | str | None = None, args: dict | str | None = None) -> "BOMUpdateLog":
-	"""Returns a BOM Update Log (that queues a job) for BOM Replacement."""
+	"""Returns a BOM Update Log (that queues a job) for BOM Replacement. Requires write on the current
+	BOM, since replacing it rewrites every parent BOM, and read on the new."""
 	boms = boms or args
 	if isinstance(boms, str):
 		boms = json.loads(boms)
 
+	_validate_boms_specified(boms)
+	require_permission("BOM", boms.get("current_bom"), "write")
+	require_permission("BOM", boms.get("new_bom"), "read")
+
 	update_log = create_bom_update_log(boms=boms)
 	return update_log
+
+
+def _validate_boms_specified(boms):
+	"""Throw the same BOMMissingError the update log raises when the request is not a mapping naming both
+	BOMs, so it is rejected before any permission lookup."""
+	from erpnext.manufacturing.doctype.bom_update_log.bom_update_log import BOMMissingError
+
+	for fieldname in ("current_bom", "new_bom"):
+		if not isinstance(boms, dict) or not boms.get(fieldname):
+			frappe.throw(
+				msg=_("Please mention the Current and New BOM for replacement."),
+				title=_("Mandatory"),
+				exc=BOMMissingError,
+			)
 
 
 @frappe.whitelist()
