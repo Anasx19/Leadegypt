@@ -10,6 +10,7 @@ from frappe.model.document import Document
 from frappe.query_builder.functions import Date
 from frappe.utils import add_to_date, flt, get_datetime, getdate, time_diff_in_hours, time_diff_in_seconds
 
+from erpnext import require_permission
 from erpnext.controllers.queries import get_match_cond
 from erpnext.setup.utils import get_exchange_rate
 
@@ -289,7 +290,7 @@ class Timesheet(Document):
 	def update_cost(self):
 		for data in self.time_logs:
 			if data.activity_type or data.is_billable:
-				rate = get_activity_cost(self.employee, data.activity_type)
+				rate = _get_activity_cost(self.employee, data.activity_type)
 				hours = data.billing_hours or 0
 				costing_hours = data.hours or 0
 				if rate:
@@ -520,6 +521,18 @@ def make_sales_invoice(
 
 @frappe.whitelist()
 def get_activity_cost(employee=None, activity_type=None, currency=None):
+	"""Return the costing and billing rates for an employee and activity type, after checking select on
+	the employee, or on the activity type when no employee is given."""
+	if employee:
+		require_permission("Employee", employee, "select")
+	else:
+		require_permission("Activity Type", activity_type, "select")
+	return _get_activity_cost(employee, activity_type, currency)
+
+
+def _get_activity_cost(employee=None, activity_type=None, currency=None):
+	"""Return the costing and billing rates for an employee and activity type without a permission check,
+	for server-side callers such as the timesheet's own cost update."""
 	base_currency = frappe.defaults.get_global_default("currency")
 	rate = frappe.db.get_values(
 		"Activity Cost",
