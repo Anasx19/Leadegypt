@@ -11,6 +11,7 @@ from frappe.query_builder.functions import Date
 from frappe.utils import flt, get_datetime, getdate
 from frappe.utils.deprecations import deprecated
 
+from erpnext import _refuse, require_permission
 from erpnext.controllers.queries import get_match_cond
 from erpnext.setup.utils import get_exchange_rate
 
@@ -498,7 +499,23 @@ def make_sales_invoice(source_name, item_code=None, customer=None, currency=None
 
 
 @frappe.whitelist()
-def get_activity_cost(employee=None, activity_type=None, currency=None):
+def get_activity_cost(
+	employee: str | None = None, activity_type: str | None = None, currency: str | None = None
+):
+	"""Return the costing and billing rates for the employee, or for the activity type if no employee is
+	given. The caller needs Timesheet read and select on that record."""
+	if not frappe.has_permission("Timesheet", "read"):
+		_refuse()
+
+	if employee:
+		require_permission("Employee", employee, "select")
+	else:
+		require_permission("Activity Type", activity_type, "select")
+
+	return _get_activity_cost(employee=employee, activity_type=activity_type, currency=currency)
+
+
+def _get_activity_cost(employee=None, activity_type=None, currency=None):
 	base_currency = frappe.defaults.get_global_default("currency")
 	rate = frappe.db.get_values(
 		"Activity Cost",
