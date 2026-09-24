@@ -20,6 +20,7 @@ from frappe.utils import (
 )
 
 import erpnext
+from erpnext import require_permission
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import get_dimensions
 from erpnext.accounts.general_ledger import make_reverse_gl_entries
 from erpnext.assets.doctype.asset.depreciation import (
@@ -1284,7 +1285,9 @@ def make_journal_entry(asset_name):
 
 
 @frappe.whitelist()
-def make_asset_movement(assets, purpose=None):
+def make_asset_movement(assets: str | list, purpose: str | None = None):
+	"""Build an unsaved Asset Movement for the given assets. Only select is needed on each Asset, since
+	Stock Manager creates movements and holds only select on Asset."""
 	import json
 
 	if isinstance(assets, str):
@@ -1296,6 +1299,8 @@ def make_asset_movement(assets, purpose=None):
 	asset_movement = frappe.new_doc("Asset Movement")
 	asset_movement.quantity = len(assets)
 	for asset in assets:
+		require_permission("Asset", asset.get("name"), "select")
+
 		asset = frappe.get_doc("Asset", asset.get("name"))
 		asset_movement.company = asset.get("company")
 		asset_movement.append(
