@@ -27,6 +27,7 @@ from frappe.utils import (
 )
 from frappe.utils.csvutils import build_csv_response
 
+from erpnext import get_record_name, require_permission
 from erpnext.buying.doctype.buying_settings.buying_settings import (
 	is_material_from_in_transit_warehouse,
 	is_rejected_material_valued,
@@ -2216,6 +2217,61 @@ def get_serial_batch_ledgers(
 	name: str | list | None = None,
 	child_row: dict | str | None = None,
 ):
+	"""
+	Return serial and batch ledger rows for bundles the current user may select, filtering the bundles first so
+	the entry rows need no read access of their own.
+	"""
+	filters = get_filters_for_bundle(
+		item_code=item_code, docstatus=docstatus, voucher_no=voucher_no, name=name, child_row=child_row
+	)
+	permitted = frappe.get_list(
+		"Serial and Batch Bundle", filters=_bundle_filters(filters), pluck="name", limit_page_length=0
+	)
+	if not permitted:
+		return []
+	return _get_serial_batch_ledgers(item_code, docstatus, None, permitted, child_row)
+
+
+def _bundle_filters(filters: list) -> list:
+	"""
+	Rewrite ledger filters to apply to the bundle alone, turning a filter on the entry's parent into one on the
+	bundle name so no child table is joined.
+	"""
+	bundle_filters = []
+	for doctype, fieldname, condition, value in filters:
+		if doctype == "Serial and Batch Entry" and fieldname == "parent":
+			bundle_filters.append(["Serial and Batch Bundle", "name", condition, value])
+		else:
+			bundle_filters.append([doctype, fieldname, condition, value])
+	return bundle_filters
+
+
+def _get_serial_batch_ledgers(
+	item_code: str | None = None,
+	docstatus: str | list | int | None = None,
+	voucher_no: str | None = None,
+	name: str | list | None = None,
+	child_row: dict | str | None = None,
+):
+	"""
+	Return serial and batch ledger rows without applying the caller's permissions, for in-process valuation
+	and POS reservation callers; this is not reachable over HTTP.
+	"""
+	fields, filters = _get_bundle_ledger_query(item_code, docstatus, voucher_no, name, child_row)
+
+	return frappe.get_all(
+		"Serial and Batch Bundle",
+		fields=fields,
+		filters=filters,
+		order_by="`tabSerial and Batch Entry`.`idx`",
+	)
+
+
+def _get_bundle_ledger_query(item_code, docstatus, voucher_no, name, child_row):
+	"""
+	Return the fields and filters for reading serial and batch ledger rows, shared by the permission-checked
+	HTTP endpoint and the unscoped in-process reader so both select the same columns.
+	"""
 	filters = get_filters_for_bundle(
 		item_code=item_code, docstatus=docstatus, voucher_no=voucher_no, name=name, child_row=child_row
 	)
@@ -2232,12 +2288,7 @@ def get_serial_batch_ledgers(
 	if not child_row:
 		fields.append("`tabSerial and Batch Bundle`.`name`")
 
-	return frappe.get_all(
-		"Serial and Batch Bundle",
-		fields=fields,
-		filters=filters,
-		order_by="`tabSerial and Batch Entry`.`idx`",
-	)
+	return fields, filters
 
 
 def get_filters_for_bundle(item_code=None, docstatus=None, voucher_no=None, name=None, child_row=None):
@@ -2314,6 +2365,10 @@ def add_serial_batch_ledgers(
 	if frappe.db.exists("Serial and Batch Bundle", bundle):
 		sb_doc = update_serial_batch_no_ledgers(bundle, entries, child_row, parent_doc, warehouse)
 	else:
+		if do_not_save:
+			_validate_bundle_child_row(child_row.doctype)
+			row = _get_child_row_parent(child_row.doctype, get_record_name(child_row.name))
+			require_permission(row.parenttype, row.parent, "write")
 		sb_doc = create_serial_batch_no_ledgers(
 			entries, child_row, parent_doc, warehouse, do_not_save=do_not_save
 		)
@@ -2376,6 +2431,41 @@ def create_serial_batch_no_ledgers(
 	frappe.msgprint(_("Serial and Batch Bundle created"), alert=True)
 
 	return doc
+
+
+def _validate_bundle_child_row(doctype):
+	"""
+	Throw unless `doctype`, sent by the caller as the child row's table, is a child table carrying a serial and
+	batch bundle field, before addressing it.
+	"""
+	if not is_bundle_child_row(doctype):
+		frappe.throw(_("{0} does not carry a serial and batch bundle").format(doctype))
+
+
+def _get_child_row_parent(doctype: str, name) -> frappe._dict:
+	"""
+	Return the child row's stored parenttype and parent, or an empty dict for a missing or malformed name, so
+	such a row is refused like a forbidden one.
+	"""
+	if not name:
+		return frappe._dict()
+	row = frappe.db.get_value(doctype, name, ["parenttype", "parent"], as_dict=True)
+	return row or frappe._dict()
+
+
+def is_bundle_child_row(doctype: str) -> bool:
+	"""
+	Return whether `doctype` is an existing child table with a serial and batch bundle field, so a doctype
+	from the request is validated before addressing a table.
+	"""
+	if not isinstance(doctype, str):
+		return False
+	if not frappe.db.exists("DocType", doctype):
+		return False
+	meta = frappe.get_meta(doctype)
+	if not meta.istable:
+		return False
+	return bool(meta.has_field("serial_and_batch_bundle"))
 
 
 def combine_datetime(date, time=None):
@@ -2820,7 +2910,7 @@ def get_reserved_serial_nos_for_pos(kwargs):
 	if not ids:
 		return []
 
-	for d in get_serial_batch_ledgers(kwargs.item_code, docstatus=1, name=ids):
+	for d in _get_serial_batch_ledgers(kwargs.item_code, docstatus=1, name=ids):
 		ignore_serial_nos.append(d.serial_no)
 
 	returned_serial_nos = []
@@ -2993,7 +3083,7 @@ def get_reserved_batches_for_pos(kwargs) -> dict:
 	]
 
 	if ids:
-		for d in get_serial_batch_ledgers(kwargs.item_code, docstatus=1, name=ids):
+		for d in _get_serial_batch_ledgers(kwargs.item_code, docstatus=1, name=ids):
 			key = (d.batch_no, d.warehouse)
 			if key not in pos_batches:
 				pos_batches[key] = frappe._dict(
