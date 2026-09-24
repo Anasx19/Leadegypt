@@ -8,8 +8,11 @@ if TYPE_CHECKING:
 	from erpnext.manufacturing.doctype.bom_update_log.bom_update_log import BOMUpdateLog
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.utils import date_diff, get_datetime, now
+
+from erpnext import require_permission
 
 
 class BOMUpdateTool(Document):
@@ -35,8 +38,29 @@ def enqueue_replace_bom(boms: dict | str | None = None, args: dict | str | None 
 	if isinstance(boms, str):
 		boms = json.loads(boms)
 
+	validate_boms_are_specified(boms or {})
+	require_permission("BOM", boms.get("current_bom"), "write")
+	require_permission("BOM", boms.get("new_bom"), "read")
+
 	update_log = create_bom_update_log(boms=boms)
 	return update_log
+
+
+def validate_boms_are_specified(boms: dict) -> None:
+	"""Raise the BOM Update Log's own missing-BOM error when either BOM is left out, so an incomplete
+	request gets the same answer here as it would from the Log."""
+	from erpnext.manufacturing.doctype.bom_update_log.bom_update_log import BOMMissingError
+
+	current_bom = boms.get("current_bom")
+	new_bom = boms.get("new_bom")
+	if current_bom and new_bom:
+		return
+
+	frappe.throw(
+		msg=_("Please mention the Current and New BOM for replacement."),
+		title=_("Mandatory"),
+		exc=BOMMissingError,
+	)
 
 
 @frappe.whitelist()
