@@ -11,6 +11,7 @@ from frappe.query_builder.functions import Coalesce, Concat, Date, Round
 from frappe.utils import flt, get_datetime, getdate
 from frappe.utils.deprecations import deprecated
 
+from erpnext import require_permission
 from erpnext.setup.utils import get_exchange_rate
 
 
@@ -505,6 +506,20 @@ def make_sales_invoice(
 
 @frappe.whitelist()
 def get_activity_cost(
+	employee: str | None = None, activity_type: str | None = None, currency: str | None = None
+):
+	"""
+	Return the costing and billing rates for an employee's activity, after checking select access on the
+	named employee, or on the activity type when no employee is given.
+	"""
+	if employee:
+		require_permission("Employee", employee, "select")
+	else:
+		require_permission("Activity Type", activity_type, "select")
+	return _get_activity_cost(employee, activity_type, currency)
+
+
+def _get_activity_cost(
 	employee: str | None = None, activity_type: str | None = None, currency: str | None = None
 ):
 	base_currency = frappe.defaults.get_global_default("currency")
