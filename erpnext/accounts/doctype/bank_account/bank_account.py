@@ -13,6 +13,8 @@ from frappe.contacts.address_and_contact import (
 from frappe.model.document import Document
 from frappe.utils import comma_and, get_link_to_form
 
+from erpnext import require_permission
+
 
 class BankAccount(Document):
 	# begin: auto-generated types
@@ -198,6 +200,14 @@ def get_closing_balance_as_per_statement(bank_account: str, date: str):
 
 @frappe.whitelist()
 def set_closing_balance_as_per_statement(bank_account: str, date: str | datetime.date, balance: float):
+	"""Require write on the Bank Account, then record its closing balance for the date. Bank Statement
+	Import Log calls _set_closing_balance_as_per_statement() directly and is unchanged."""
+	require_permission("Bank Account", bank_account, "write")
+
+	return _set_closing_balance_as_per_statement(bank_account, date, balance)
+
+
+def _set_closing_balance_as_per_statement(bank_account: str, date: str | datetime.date, balance: float):
 	"""
 	Set the closing balance as per statement for a bank account and date
 	"""
