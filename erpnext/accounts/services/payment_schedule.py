@@ -7,6 +7,7 @@ import frappe
 from frappe import _
 from frappe.utils import DateTimeLikeObject, add_days, add_months, cint, flt, get_last_day, getdate
 
+from erpnext import _refuse, get_record_name, require_permission
 from erpnext.accounts.party import get_party_account_currency
 
 
@@ -64,7 +65,7 @@ class PaymentScheduleService:
 				if doc.get("payment_terms_template"):
 					doc.ignore_default_payment_terms_template = 1
 			elif doc.get("payment_terms_template"):
-				data = get_payment_terms(
+				data = _get_payment_terms(
 					doc.payment_terms_template, posting_date, grand_total, base_grand_total
 				)
 				for item in data:
@@ -343,6 +344,22 @@ def get_payment_terms(
 	base_grand_total: float | None = None,
 	bill_date: DateTimeLikeObject | None = None,
 ) -> list:
+	"""
+	Return the payment schedule rows a terms template produces for the given totals and dates, after
+	checking the caller may read that template when one is named.
+	"""
+	if terms_template:
+		require_permission("Payment Terms Template", terms_template, "read")
+	return _get_payment_terms(terms_template, posting_date, grand_total, base_grand_total, bill_date)
+
+
+def _get_payment_terms(
+	terms_template: str,
+	posting_date: DateTimeLikeObject | None = None,
+	grand_total: float | None = None,
+	base_grand_total: float | None = None,
+	bill_date: DateTimeLikeObject | None = None,
+) -> list:
 	if not terms_template:
 		return
 
@@ -364,11 +381,18 @@ def get_payment_term_details(
 	base_grand_total: float | None = None,
 	bill_date: DateTimeLikeObject | None = None,
 ) -> frappe._dict:
+	"""
+	Return due dates and amounts for a payment term row or a term named by the caller, which needs select
+	access; any other value is refused like a forbidden term.
+	"""
 	term_details = frappe._dict()
-	if isinstance(term, str):
+	if get_record_name(term) is not None:
+		require_permission("Payment Term", term, "select")
 		term = frappe.get_doc("Payment Term", term)
-	else:
+	elif isinstance(term, dict):
 		term_details.payment_term = term.payment_term
+	else:
+		_refuse()
 
 	for field in [
 		"description",
