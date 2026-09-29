@@ -10,11 +10,14 @@ from frappe.query_builder import Criterion
 from frappe.query_builder.functions import Abs, Sum
 from frappe.utils.data import comma_and
 
+from erpnext import _refuse, get_record_name, get_unwritable_doctype
 from erpnext.accounts.utils import (
 	cancel_exchange_gain_loss_journal,
 	unlink_ref_doc_from_payment_entries,
 	update_voucher_outstanding,
 )
+
+SUPPORTED_VOUCHER_TYPES = ["Payment Entry", "Journal Entry"]
 
 
 class UnreconcilePayment(Document):
@@ -38,7 +41,7 @@ class UnreconcilePayment(Document):
 	# end: auto-generated types
 
 	def validate(self):
-		self.supported_types = ["Payment Entry", "Journal Entry"]
+		self.supported_types = SUPPORTED_VOUCHER_TYPES
 		if self.voucher_type not in self.supported_types:
 			frappe.throw(_("Only {0} are supported").format(comma_and(self.supported_types)))
 
@@ -196,9 +199,19 @@ def get_linked_advances(company, docname):
 
 
 @frappe.whitelist()
-def create_unreconcile_doc_for_selection(selections=None):
+def create_unreconcile_doc_for_selection(selections: str | list | None = None):
 	if selections:
 		selections = json.loads(selections)
+		names_by_doctype = {}
+		for row in selections:
+			validate_supported_voucher_type(row.get("voucher_type"))
+			names_by_doctype.setdefault(row.get("voucher_type"), set()).add(
+				get_record_name(row.get("voucher_no"))
+			)
+
+		if get_unwritable_doctype(names_by_doctype):
+			_refuse()
+
 		# assuming each row is a unique voucher
 		for row in selections:
 			unrecon = frappe.new_doc("Unreconcile Payment")
@@ -215,3 +228,10 @@ def create_unreconcile_doc_for_selection(selections=None):
 				and x.reference_name == row.get("against_voucher_no")
 			]
 			unrecon.save().submit()
+
+
+def validate_supported_voucher_type(voucher_type: str | None) -> None:
+	"""Reject a voucher type that unreconciliation does not support, with the same message the Unreconcile
+	Payment document raises in its own validation."""
+	if voucher_type not in SUPPORTED_VOUCHER_TYPES:
+		frappe.throw(_("Only {0} are supported").format(comma_and(SUPPORTED_VOUCHER_TYPES)))

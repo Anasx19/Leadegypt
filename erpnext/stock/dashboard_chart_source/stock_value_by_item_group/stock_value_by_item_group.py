@@ -37,6 +37,8 @@ def get(
 
 
 def get_stock_value_by_item_group(company):
+	"""Return the ten item groups with the highest stock value across the warehouses the caller may
+	see. The chart is empty when no warehouse is permitted."""
 	doctype = frappe.qb.DocType("Bin")
 	item_doctype = frappe.qb.DocType("Item")
 
@@ -45,6 +47,8 @@ def get_stock_value_by_item_group(company):
 		warehouse_filters.append(["company", "=", company])
 
 	warehouses = frappe.get_list("Warehouse", pluck="name", filters=warehouse_filters)
+	if not warehouses:
+		return [], []
 
 	stock_value = Sum(doctype.stock_value)
 
@@ -58,8 +62,7 @@ def get_stock_value_by_item_group(company):
 		.limit(10)
 	)
 
-	if warehouses:
-		query = query.where(doctype.warehouse.isin(warehouses))
+	query = query.where(doctype.warehouse.isin(warehouses))
 
 	results = query.run(as_dict=True)
 
