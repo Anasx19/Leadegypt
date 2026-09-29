@@ -2,12 +2,14 @@
 # License: GNU General Public License v3. See license.txt
 
 
+import json
 import os
 
 import frappe
 from frappe import N_ as _
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 from frappe.desk.page.setup_wizard.setup_wizard import add_all_roles_to
+from frappe.permissions import add_permission, update_permission_property
 
 from erpnext.setup.doctype.incoterm.incoterm import create_incoterms
 
@@ -37,11 +39,89 @@ def after_install():
 	add_standard_navbar_items()
 	add_app_name()
 	update_roles()
+	grant_address_read_to_accounts_manager()
 	make_default_operations()
 	update_pegged_currencies()
 	set_default_print_formats()
 	toggle_hidden_fields()
 	frappe.db.commit()
+
+
+def grant_address_read_to_accounts_manager():
+	"""
+	Add a level-0 read rule for Accounts Manager on Address through frappe's own permission API, leaving any
+	existing or admin-changed rule untouched; also run after a fresh install.
+	"""
+	if not frappe.db.exists("Role", "Accounts Manager"):
+		return
+	if _has_accounts_manager_address_rule():
+		print("Address / Accounts Manager: kept, the role already has a rule")
+		return
+	if _has_address_admin_history():
+		print("Address / Accounts Manager: skipped, this site changed the rule")
+		return
+	_add_accounts_manager_address_read()
+	print("Address / Accounts Manager: granted read")
+
+
+def _has_accounts_manager_address_rule() -> bool:
+	"""
+	Return whether Accounts Manager holds any rule on Address at any level, either in the site's Custom DocPerm
+	rows or in the rules frappe ships for the doctype.
+	"""
+	if frappe.db.exists("Custom DocPerm", {"parent": "Address", "role": "Accounts Manager"}):
+		return True
+	return bool(frappe.db.exists("DocPerm", {"parent": "Address", "role": "Accounts Manager"}))
+
+
+def _has_address_admin_history() -> bool:
+	"""
+	Return whether Permission Log records an admin updating or deleting an Accounts Manager rule on Address, a
+	choice the site made that this grant must not undo.
+	"""
+	for changes in _get_address_admin_logs():
+		if _get_logged_role(changes) == "Accounts Manager":
+			return True
+	return False
+
+
+def _get_address_admin_logs() -> list:
+	"""
+	Return the changes JSON of every Permission Log entry recording an admin updating or deleting a Custom
+	DocPerm rule on Address, at any permission level.
+	"""
+	return frappe.get_all(
+		"Permission Log",
+		filters={
+			"for_doctype": "DocType",
+			"for_document": "Address",
+			"reference_type": "Custom DocPerm",
+			"status": ("in", ["Removed", "Updated"]),
+		},
+		pluck="changes",
+	)
+
+
+def _get_logged_role(changes: str) -> str | None:
+	"""
+	Return the role named in the `from` values of one Permission Log entry, or None when the entry cannot be
+	parsed and so names no role.
+	"""
+	try:
+		logged = json.loads(changes) or {}
+	except (TypeError, ValueError):
+		return None
+	return (logged.get("from") or {}).get("role")
+
+
+def _add_accounts_manager_address_read():
+	"""
+	Add the read rule with add_permission, which copies Address's shipped rules into Custom DocPerm first, then
+	clear the export flag Custom DocPerm defaults to on.
+	"""
+	add_permission("Address", "Accounts Manager", 0, "read")
+	update_permission_property("Address", "Accounts Manager", 0, "export", 0)
+	frappe.clear_cache(doctype="Address")
 
 
 def make_default_operations():

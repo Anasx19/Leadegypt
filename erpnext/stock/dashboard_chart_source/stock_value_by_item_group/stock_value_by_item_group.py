@@ -9,6 +9,8 @@ from frappe import _
 from frappe.query_builder.functions import Sum
 from frappe.utils.dashboard import cache_source
 
+from erpnext import _refuse, require_permission
+
 
 @frappe.whitelist()
 @cache_source
@@ -23,12 +25,21 @@ def get(
 	time_interval: Any = None,
 	heatmap_year: Any = None,
 ):
+	"""
+	Return the stock value by item group chart, after checking select on the company and on Warehouse, which
+	every role that owns the chart holds.
+	"""
 	if filters and isinstance(filters, str):
 		filters = frappe.parse_json(filters)
 
 	company = filters.get("company") if filters else None
 	if not company:
 		company = frappe.defaults.get_defaults().company
+
+	if company:
+		require_permission("Company", company, "select")
+	if not frappe.has_permission("Warehouse", "select"):
+		_refuse()
 
 	labels, datasets = get_stock_value_by_item_group(company)
 
@@ -39,6 +50,10 @@ def get(
 
 
 def get_stock_value_by_item_group(company):
+	"""
+	Return the top item groups by stock value across the warehouses the current user can read, returning no
+	figures at all when no warehouse is readable.
+	"""
 	doctype = frappe.qb.DocType("Bin")
 	item_doctype = frappe.qb.DocType("Item")
 
@@ -47,6 +62,9 @@ def get_stock_value_by_item_group(company):
 		warehouse_filters.append(["company", "=", company])
 
 	warehouses = frappe.get_list("Warehouse", pluck="name", filters=warehouse_filters)
+
+	if not warehouses:
+		return [], []
 
 	stock_value = Sum(doctype.stock_value)
 
@@ -60,8 +78,7 @@ def get_stock_value_by_item_group(company):
 		.limit(10)
 	)
 
-	if warehouses:
-		query = query.where(doctype.warehouse.isin(warehouses))
+	query = query.where(doctype.warehouse.isin(warehouses))
 
 	results = query.run(as_dict=True)
 
