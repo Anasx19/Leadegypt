@@ -13,6 +13,7 @@ from frappe.query_builder.functions import IfNull
 from frappe.utils import cstr
 from frappe.utils.nestedset import get_root_of
 
+from erpnext import require_permission
 from erpnext.setup.doctype.customer_group.customer_group import get_parent_customer_groups
 from erpnext.setup.doctype.supplier_group.supplier_group import get_parent_supplier_groups
 
@@ -142,6 +143,8 @@ class TaxRule(Document):
 
 @frappe.whitelist()
 def get_party_details(party, party_type, args=None):
+	"""Return the address fields used to match a tax rule for a party. Every address loaded, passed or the
+	party's default, must be readable by the current user."""
 	out = {}
 	billing_address, shipping_address = None, None
 	if args:
@@ -152,15 +155,19 @@ def get_party_details(party, party_type, args=None):
 				frappe.throw(_("Invalid address"), frappe.PermissionError)
 
 		if args.get("billing_address"):
+			require_permission("Address", args.get("billing_address"), "read")
 			billing_address = frappe.get_doc("Address", args.get("billing_address"))
 		if args.get("shipping_address"):
+			require_permission("Address", args.get("shipping_address"), "read")
 			shipping_address = frappe.get_doc("Address", args.get("shipping_address"))
 	else:
 		billing_address_name = get_default_address(party_type, party)
 		shipping_address_name = get_default_address(party_type, party, "is_shipping_address")
 		if billing_address_name:
+			require_permission("Address", billing_address_name, "read")
 			billing_address = frappe.get_doc("Address", billing_address_name)
 		if shipping_address_name:
+			require_permission("Address", shipping_address_name, "read")
 			shipping_address = frappe.get_doc("Address", shipping_address_name)
 
 	if billing_address:

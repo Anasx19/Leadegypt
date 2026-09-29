@@ -33,6 +33,7 @@ def after_install():
 	create_default_role_profiles()
 	add_company_to_session_defaults()
 	add_standard_navbar_items()
+	grant_address_read_to_accounts_manager()
 	add_app_name()
 	hide_workspaces()
 	update_roles()
@@ -383,3 +384,42 @@ def after_app_uninstall(app_name=None):
 		disable_frappe_crm_data_synchronization_on_crm_uninstall()
 
 		frappe.db.commit()  # nosemgrep
+
+
+def grant_address_read_to_accounts_manager():
+	"""Add a level-0 read rule for Accounts Manager on Address unless the site already has any rule for the
+	role there; installs and the release patch both run this."""
+	if not frappe.db.exists("Role", "Accounts Manager"):
+		return
+	if has_address_rule_for_accounts_manager():
+		print("Address / Accounts Manager: kept, the site already has a rule")
+		return
+	try:
+		frappe.db.savepoint("grant_address_read_to_accounts_manager")
+		add_address_read_for_accounts_manager()
+		print("Address / Accounts Manager: added read")
+	except Exception:
+		frappe.db.rollback(save_point="grant_address_read_to_accounts_manager")
+		frappe.log_error(
+			title="Could not add permission",
+			message=f"Address / Accounts Manager\n\n{frappe.get_traceback()}",
+		)
+
+
+def has_address_rule_for_accounts_manager():
+	"""Return whether Accounts Manager already has a rule on Address at any level, reading Custom DocPerm on
+	a customised site and the shipped rows otherwise."""
+	# v15 has no Permission Log, so a rule the site deleted cannot be told apart from one never added
+	if frappe.db.exists("Custom DocPerm", {"parent": "Address"}):
+		return bool(frappe.db.exists("Custom DocPerm", {"parent": "Address", "role": "Accounts Manager"}))
+	return bool(frappe.db.exists("DocPerm", {"parent": "Address", "role": "Accounts Manager"}))
+
+
+def add_address_read_for_accounts_manager():
+	"""Add the rule through frappe's own API, which first copies Address's shipped rules into Custom DocPerm,
+	then clear the export flag Custom DocPerm defaults to."""
+	from frappe.permissions import add_permission, update_permission_property
+
+	add_permission("Address", "Accounts Manager", 0, "read")
+	update_permission_property("Address", "Accounts Manager", 0, "export", 0)
+	frappe.clear_cache(doctype="Address")

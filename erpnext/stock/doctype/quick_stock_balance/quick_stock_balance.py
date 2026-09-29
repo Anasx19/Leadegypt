@@ -6,6 +6,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 
+from erpnext import _refuse, require_user_permission
 from erpnext.stock.utils import get_stock_balance, get_stock_value_on
 
 
@@ -33,6 +34,12 @@ class QuickStockBalance(Document):
 
 @frappe.whitelist()
 def get_stock_item_details(warehouse, date, item=None, barcode=None):
+	"""Return the stock quantity, value and barcodes of an item in a warehouse. The current user's User
+	Permissions must allow both, after the doctype-level Item read the stock lookups need."""
+	if not frappe.has_permission("Item", "read"):
+		_refuse()
+	require_user_permission("Warehouse", warehouse)
+
 	out = {}
 	if barcode:
 		out["item"] = frappe.db.get_value("Item Barcode", filters={"barcode": barcode}, fieldname=["parent"])
@@ -40,6 +47,8 @@ def get_stock_item_details(warehouse, date, item=None, barcode=None):
 			frappe.throw(_("Invalid Barcode. There is no Item attached to this barcode."))
 	else:
 		out["item"] = item
+
+	require_user_permission("Item", out["item"])
 
 	barcodes = frappe.db.get_values("Item Barcode", filters={"parent": out["item"]}, fieldname=["barcode"])
 
