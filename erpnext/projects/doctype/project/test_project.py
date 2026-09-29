@@ -399,24 +399,220 @@ class TestProject(ERPNextTestSuite):
 		source, tasks = self._project_with_tasks("Task Completion", 2)
 		new_name = f"{source.project_name} Copy"
 
-		create_duplicate_project(frappe.as_json(source.as_dict()), new_name)
+		new_project = create_duplicate_project(frappe.as_json(source.as_dict()), new_name)
 
-		# Project is named by series, so look the copy up by its project_name
-		new_project = frappe.db.get_value("Project", {"project_name": new_name})
-		self.assertTrue(new_project)
+		# Project is named by series, so the returned name is what the form navigates to
+		self.assertEqual(frappe.db.get_value("Project", new_project, "project_name"), new_name)
 		copied_tasks = frappe.get_all("Task", filters={"project": new_project})
 		self.assertEqual(len(copied_tasks), len(tasks))
+
+	def test_duplicate_of_completed_project_starts_open(self):
+		from erpnext.projects.doctype.project.project import create_duplicate_project
+
+		for task_count in (2, 0):
+			with self.subTest(task_count=task_count):
+				source, tasks = self._project_with_tasks("Task Completion", task_count)
+				for task in tasks:
+					frappe.db.set_value("Task", task, {"status": "Completed", "progress": 100})
+				source.reload()
+				source.status = "Completed"
+				source.save()
+				self.assertEqual(source.percent_complete, 100)
+
+				new_project = create_duplicate_project(
+					frappe.as_json(source.as_dict()), f"{source.project_name} Copy"
+				)
+
+				copy = frappe.db.get_value(
+					"Project",
+					new_project,
+					["status", "percent_complete", "percent_complete_method"],
+					as_dict=True,
+				)
+				self.assertEqual(copy.status, "Open")
+				self.assertEqual(copy.percent_complete, 0)
+				# kept from the source (completing a project without tasks makes it Manual), not
+				# forced to Manual by the copy being inserted as Completed before its tasks exist
+				self.assertEqual(copy.percent_complete_method, source.percent_complete_method)
+
+	def test_create_duplicate_project_links_copied_tasks_to_each_other(self):
+		from erpnext.projects.doctype.project.project import create_duplicate_project
+
+		source, _ = self._project_with_tasks("Task Completion", 0)
+		prefix = source.project_name
+
+		def make_task(subject, **kwargs):
+			return frappe.get_doc(
+				doctype="Task",
+				subject=f"{prefix} {subject}",
+				project=source.name,
+				exp_start_date=nowdate(),
+				exp_end_date=nowdate(),
+				**kwargs,
+			).insert()
+
+		parent = make_task("Parent", is_group=1)
+		child = make_task("Child", parent_task=parent.name)
+		blocker = make_task("Blocker", status="Completed")
+		blocked = make_task("Blocked", depends_on=[{"task": blocker.name}])
+		# completed despite its open dependency, as data created before that check existed can be
+		frappe.db.set_value("Task", blocked.name, {"status": "Completed", "progress": 100})
+
+		new_project = create_duplicate_project(frappe.as_json(source.as_dict()), f"{prefix} Copy")
+
+		copies = {
+			t.subject.removeprefix(f"{prefix} "): t
+			for t in frappe.get_all(
+				"Task",
+				filters={"project": new_project},
+				fields=["name", "subject", "status", "progress", "parent_task"],
+			)
+		}
+		self.assertEqual(set(copies), {"Parent", "Child", "Blocker", "Blocked"})
+		self.assertEqual(copies["Child"].parent_task, copies["Parent"].name)
+		self.assertEqual(
+			frappe.get_all("Task Depends On", {"parent": copies["Blocked"].name}, pluck="task"),
+			[copies["Blocker"].name],
+		)
+		# copies start afresh instead of carrying over the source's progress
+		for task in copies.values():
+			self.assertEqual(task.status, "Open")
+			self.assertEqual(task.progress, 0)
+
+		# the source project's tasks are left as they were
+		self.assertEqual(frappe.db.get_value("Task", child.name, "parent_task"), parent.name)
+
+	def test_create_duplicate_project_copies_nested_tasks(self):
+		from erpnext.projects.doctype.project.project import create_duplicate_project
+
+		source, _ = self._project_with_tasks("Task Completion", 0)
+		prefix = source.project_name
+
+		def make_task(subject, **kwargs):
+			return frappe.get_doc(
+				doctype="Task",
+				subject=f"{prefix} {subject}",
+				project=source.name,
+				exp_start_date=nowdate(),
+				exp_end_date=nowdate(),
+				**kwargs,
+			).insert()
+
+		# Task itself makes each parent depend on its subtasks
+		root = make_task("Root", is_group=1)
+		group = make_task("Group", is_group=1, parent_task=root.name)
+		leaf = make_task("Leaf", parent_task=group.name)
+		make_task("Sibling", parent_task=root.name, depends_on=[{"task": leaf.name}])
+		# links looping through the tree: Root needs Leaf, which needs Group, which needs Root
+		root.reload()
+		root.append("depends_on", {"task": leaf.name})
+		root.save()
+
+		new_project = create_duplicate_project(frappe.as_json(source.as_dict()), f"{prefix} Copy")
+
+		copies = {
+			t.subject.removeprefix(f"{prefix} "): t
+			for t in frappe.get_all(
+				"Task", filters={"project": new_project}, fields=["name", "subject", "parent_task"]
+			)
+		}
+		self.assertEqual(set(copies), {"Root", "Group", "Leaf", "Sibling"})
+		names = {subject: t.name for subject, t in copies.items()}
+
+		self.assertFalse(copies["Root"].parent_task)
+		self.assertEqual(copies["Group"].parent_task, names["Root"])
+		self.assertEqual(copies["Leaf"].parent_task, names["Group"])
+		self.assertEqual(copies["Sibling"].parent_task, names["Root"])
+
+		def dependencies(subject):
+			return sorted(
+				frappe.get_all("Task Depends On", {"parent": names[subject]}, pluck="task", order_by="idx")
+			)
+
+		# the same dependencies as the source, each once and all within the copy
+		self.assertEqual(dependencies("Root"), sorted([names["Group"], names["Sibling"], names["Leaf"]]))
+		self.assertEqual(dependencies("Group"), [names["Leaf"]])
+		self.assertEqual(dependencies("Sibling"), [names["Leaf"]])
+		self.assertEqual(dependencies("Leaf"), [])
+
+	def test_copy_order_handles_dependency_chains_beyond_recursion_limit(self):
+		import sys
+
+		from erpnext.projects.doctype.project.project import get_copy_order
+
+		length = sys.getrecursionlimit() + 100
+		# listed newest first, each task depending on the one before it
+		names = [f"Task {i}" for i in reversed(range(length))]
+		tasks = {name: frappe._dict(parent_task=None) for name in names}
+		depends_on = {f"Task {i}": [f"Task {i - 1}"] if i else [] for i in range(length)}
+		# and a subtask listed before its parent
+		tasks["Subtask"] = frappe._dict(parent_task="Parent")
+		tasks["Parent"] = frappe._dict(parent_task=None)
+		depends_on.update({"Subtask": [], "Parent": []})
+
+		order = get_copy_order(tasks, depends_on)
+
+		self.assertCountEqual(order, tasks)
+		position = {name: i for i, name in enumerate(order)}
+		for i in range(1, length):
+			self.assertLess(position[f"Task {i - 1}"], position[f"Task {i}"])
+		self.assertLess(position["Parent"], position["Subtask"])
 
 	def test_create_duplicate_project_rejects_same_name(self):
 		from erpnext.projects.doctype.project.project import create_duplicate_project
 
 		source, _ = self._project_with_tasks("Task Completion", 1)
-		self.assertRaises(
-			frappe.ValidationError,
-			create_duplicate_project,
-			frappe.as_json(source.as_dict()),
-			source.name,
-		)
+		with self.assertRaisesRegex(frappe.ValidationError, "different from previous project name"):
+			create_duplicate_project(frappe.as_json(source.as_dict()), source.project_name)
+
+		# the form sends its doc as it is, which may carry an unsaved edit to the Project Name
+		edited = source.as_dict()
+		edited.project_name = f"{source.project_name} (edited)"
+		with self.assertRaisesRegex(frappe.ValidationError, "different from previous project name"):
+			create_duplicate_project(frappe.as_json(edited), source.project_name)
+
+	def test_create_duplicate_project_rejects_invalid_payload(self):
+		from erpnext.projects.doctype.project.project import create_duplicate_project
+
+		source, _ = self._project_with_tasks("Task Completion", 1)
+		orphan_task = frappe.get_doc(
+			doctype="Task", subject=f"{source.project_name} Orphan", exp_start_date=nowdate()
+		).insert()
+		projects_before = frappe.db.count("Project")
+
+		source_dict = source.as_dict()
+		invalid_payloads = {
+			"not a dict": frappe.as_json([source_dict]),
+			"another doctype": frappe.as_json({**source_dict, "doctype": "ToDo"}),
+			"unsaved project": frappe.as_json({**source_dict, "name": None}),
+			"non-string name": frappe.as_json({**source_dict, "name": ["PROJ-0001"]}),
+		}
+		for case, payload in invalid_payloads.items():
+			with self.subTest(case=case):
+				self.assertRaisesRegex(
+					frappe.ValidationError,
+					"Select a saved Project to duplicate",
+					create_duplicate_project,
+					payload,
+					f"{source.project_name} {case}",
+				)
+
+		with self.assertRaisesRegex(frappe.ValidationError, "Project Name is required"):
+			create_duplicate_project(frappe.as_json(source_dict), "   ")
+
+		# outside requests and tests nothing enforces the `str` hint, as with the unwrapped function
+		for project_name in (None, 42):
+			with self.subTest(project_name=project_name):
+				with self.assertRaisesRegex(frappe.ValidationError, "Project Name is required"):
+					create_duplicate_project.__wrapped__(frappe.as_json(source_dict), project_name)
+
+		missing_source = frappe.as_json({**source_dict, "name": "_Test Missing Project"})
+		with self.assertRaises(frappe.DoesNotExistError):
+			create_duplicate_project(missing_source, f"{source.project_name} missing")
+
+		self.assertEqual(frappe.db.count("Project"), projects_before)
+		# an unnamed payload must not pick up tasks that belong to no project
+		self.assertEqual(frappe.db.count("Task", {"subject": orphan_task.subject}), 1)
 
 	def test_set_project_status_updates_project_and_tasks(self):
 		from erpnext.projects.doctype.project.project import set_project_status

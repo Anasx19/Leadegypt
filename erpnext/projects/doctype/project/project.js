@@ -87,11 +87,28 @@ frappe.ui.form.on("Project", {
 
 		if (!frm.doc.__islocal) {
 			frm.add_web_link("/projects?project=" + encodeURIComponent(frm.doc.name));
-
-			frm.trigger("show_dashboard");
 		}
 		frm.trigger("set_custom_buttons");
-		frm.trigger("render_tasks");
+
+		// the Tasks list is (re)built only once its tab is shown for this document
+		frm.tasks_list = null;
+		frm.trigger("load_tasks_tab");
+	},
+
+	on_tab_change: function (frm) {
+		frm.trigger("load_tasks_tab");
+	},
+
+	load_tasks_tab: function (frm) {
+		const active_tab = frm.get_active_tab && frm.get_active_tab();
+		if (active_tab?.df?.fieldname !== "tasks_tab") return;
+
+		if (frm.tasks_list) {
+			// reload on every visit so tasks changed elsewhere show up
+			frm.tasks_list.then((list) => list && list.refresh());
+		} else {
+			frm.tasks_list = frm.events.render_tasks(frm);
+		}
 	},
 
 	render_tasks: function (frm) {
@@ -100,90 +117,108 @@ frappe.ui.form.on("Project", {
 			$wrapper.html(
 				`<p class="text-muted">${__("Save the Project first to add and view its Tasks.")}</p>`
 			);
-			return;
+			return Promise.resolve();
 		}
 
+		const project = frm.doc.name;
 		// loading Task's meta also loads task_list.js, whose indicators the Status column reuses
-		Promise.all([frappe.require("embedded_list.bundle.js"), frappe.model.with_doctype("Task")]).then(
-			() => {
-				const list = new frappe.ui.EmbeddedList({
-					wrapper: $wrapper,
-					doctype: "Task",
-					filters: { project: frm.doc.name },
-					fields: [
-						"name",
-						"subject",
-						"status",
-						"priority",
-						"_assign",
-						"exp_start_date",
-						"exp_end_date",
-						"progress",
-						"parent_task",
-					],
-					order_by: "creation asc",
-					empty_message: __("No Tasks in this Project yet."),
-					add_button: {
-						label: __("Add Task"),
-						action: () => {
-							frappe.model.with_doctype("Task", () => {
-								const task = frappe.model.get_new_doc("Task");
-								task.project = frm.doc.name;
-								// % Complete and status are recomputed on the server when a task changes
-								frappe.ui.form.make_quick_entry("Task", () => frm.reload_doc(), null, task);
-							});
+		const pending = Promise.all([
+			frappe.require("embedded_list.bundle.js"),
+			frappe.model.with_doctype("Task"),
+		]).then(() => {
+			// a refresh while loading starts over with a list of its own
+			if (frm.tasks_list !== pending) return;
+
+			const list = new frappe.ui.EmbeddedList({
+				wrapper: $wrapper,
+				get_page: ({ start, page_length, txt }) => {
+					const args = {
+						fields: [
+							"name",
+							"subject",
+							"status",
+							"priority",
+							"_assign",
+							"exp_start_date",
+							"exp_end_date",
+							"progress",
+							"parent_task",
+						],
+						filters: { project },
+						order_by: "creation asc",
+						start,
+						limit: page_length,
+					};
+					if (txt) {
+						args.or_filters = [
+							["subject", "like", `%${txt}%`],
+							["name", "like", `%${txt}%`],
+						];
+					}
+					return frappe.db.get_list("Task", args);
+				},
+				empty_message: __("No Tasks in this Project yet."),
+				add_button: frappe.model.can_create("Task") && {
+					label: __("Add Task"),
+					action: () => {
+						frappe.model.with_doctype("Task", () => {
+							const task = frappe.model.get_new_doc("Task");
+							task.project = frm.doc.name;
+							// % Complete and status are recomputed on the server when a task changes
+							frappe.ui.form.make_quick_entry("Task", () => frm.reload_doc(), null, task);
+						});
+					},
+				},
+				on_row_click: (row) => frappe.set_route("Form", "Task", row.name),
+				columns: [
+					{ label: __("Subject"), fieldname: "subject" },
+					{
+						label: __("Status"),
+						render: (row) => {
+							const [label, color] = frappe.get_indicator(row, "Task") || [
+								__(row.status),
+								"gray",
+							];
+							// badge knows "darkgrey" but not the list view's "dark grey"
+							return frappe.ui.badge.html({ label, theme: color.replace(" ", "") });
 						},
 					},
-					on_row_click: (row) => frappe.set_route("Form", "Task", row.name),
-					columns: [
-						{ label: __("Subject"), fieldname: "subject" },
-						{
-							label: __("Status"),
-							render: (row) => {
-								const [label, color] = frappe.get_indicator(row, "Task") || [
-									__(row.status),
-									"gray",
-								];
-								// badge knows "darkgrey" but not the list view's "dark grey"
-								return frappe.ui.badge.html({ label, theme: color.replace(" ", "") });
-							},
+					{ label: __("Priority"), render: (row) => __(row.priority || "") },
+					{
+						label: __("Assigned To"),
+						render: (row) => {
+							const users = JSON.parse(row._assign || "[]");
+							if (!users.length) return "";
+							return frappe
+								.avatar_group(users, 3, { align: "left", overlap: true })
+								.prop("outerHTML");
 						},
-						{ label: __("Priority"), render: (row) => __(row.priority || "") },
-						{
-							label: __("Assigned To"),
-							render: (row) => {
-								const users = JSON.parse(row._assign || "[]");
-								if (!users.length) return "";
-								return frappe
-									.avatar_group(users, 3, { align: "left", overlap: true })
-									.prop("outerHTML");
-							},
+					},
+					{
+						label: __("Expected Dates"),
+						render: (row) => {
+							const start = frappe.datetime.str_to_user(row.exp_start_date, false, true);
+							const end = frappe.datetime.str_to_user(row.exp_end_date, false, true);
+							if (!start && !end) return "";
+							return `${start || "…"} → ${end || "…"}`;
 						},
-						{
-							label: __("Expected Dates"),
-							render: (row) => {
-								const start = frappe.datetime.str_to_user(row.exp_start_date, false, true);
-								const end = frappe.datetime.str_to_user(row.exp_end_date, false, true);
-								if (!start && !end) return "";
-								return `${start || "…"} → ${end || "…"}`;
-							},
-						},
-						{
-							label: __("Progress"),
-							render: (row) =>
-								frappe.ui.progress.html({ value: flt(row.progress), hint: true }),
-						},
-						{
-							label: __("Parent Task"),
-							type: "link",
-							fieldname: "parent_task",
-							route: (row) => ["Form", "Task", row.parent_task],
-						},
-					],
-				});
-				list.refresh();
-			}
-		);
+					},
+					{
+						label: __("Progress"),
+						render: (row) => frappe.ui.progress.html({ value: flt(row.progress), hint: true }),
+					},
+					{
+						label: __("Parent Task"),
+						type: "link",
+						fieldname: "parent_task",
+						route: (row) => ["Form", "Task", row.parent_task],
+					},
+				],
+			});
+			list.refresh();
+			return list;
+		});
+		return pending;
 	},
 
 	set_custom_buttons: function (frm) {
@@ -283,20 +318,23 @@ frappe.ui.form.on("Project", {
 	},
 
 	create_duplicate: function (frm) {
-		return new Promise((resolve) => {
-			frappe.prompt("Project Name", (data) => {
+		frappe.prompt(
+			{ fieldname: "project_name", fieldtype: "Data", label: __("Project Name"), reqd: 1 },
+			(values) => {
 				frappe
 					.xcall("erpnext.projects.doctype.project.project.create_duplicate_project", {
 						prev_doc: frm.doc,
-						project_name: data.value,
+						project_name: values.project_name,
 					})
-					.then(() => {
-						frappe.set_route("Form", "Project", data.value);
+					.then((new_project) => {
+						// the new project is named by its naming series, not by the name entered
+						frappe.set_route("Form", "Project", new_project);
 						frappe.show_alert(__("Duplicate project has been created"));
 					});
-				resolve();
-			});
-		});
+			},
+			__("Duplicate Project with Tasks"),
+			__("Create")
+		);
 	},
 
 	set_status: function (frm, status) {
