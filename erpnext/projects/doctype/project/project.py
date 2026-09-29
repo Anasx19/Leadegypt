@@ -53,7 +53,7 @@ class Project(Document):
 		per_gross_margin: DF.Percent
 		percent_complete: DF.Percent
 		percent_complete_method: DF.Literal["Manual", "Task Completion", "Task Progress", "Task Weight"]
-		priority: DF.Literal["Medium", "Low", "High"]
+		priority: DF.Literal["Low", "Medium", "High"]
 		project_name: DF.Data
 		project_template: DF.Link | None
 		project_type: DF.Link | None
@@ -661,37 +661,149 @@ def allow_to_make_project_update(project, time, frequency):
 
 
 @frappe.whitelist(methods=["POST"])
-def create_duplicate_project(prev_doc: str | dict, project_name: str):
-	"""Create duplicate project based on the old project"""
-	import json
-
+def create_duplicate_project(prev_doc: str | dict, project_name: str) -> str:
+	"""Create duplicate project based on the old project and return the new project's name"""
 	prev_doc = frappe.parse_json(prev_doc)
 
-	# prev_doc is caller-supplied, but the tasks below are read from the db by name
-	if source_name := prev_doc.get("name"):
-		frappe.has_permission("Project", "read", source_name, throw=True)
+	# prev_doc is caller-supplied: it must be a saved Project, as its doctype decides what gets
+	# created and its name decides which tasks get copied
+	if (
+		not isinstance(prev_doc, dict)
+		or prev_doc.get("doctype", "Project") != "Project"
+		or not isinstance(prev_doc.get("name"), str)
+		or not prev_doc["name"]
+	):
+		frappe.throw(_("Select a saved Project to duplicate"))
 
-	if project_name == prev_doc.get("name"):
+	# the type hint is enforced only in requests and tests, not for other calls from Python
+	if not isinstance(project_name, str) or not project_name.strip():
+		frappe.throw(_("Project Name is required"))
+
+	source_name = prev_doc["name"]
+	prev_doc["doctype"] = "Project"
+	if not frappe.db.exists("Project", source_name):
+		frappe.throw(_("Project {0} does not exist").format(source_name), frappe.DoesNotExistError)
+	frappe.has_permission("Project", "read", source_name, throw=True)
+
+	# prev_doc may carry unsaved edits, so check against the saved source
+	source_project_name = frappe.db.get_value("Project", source_name, "project_name")
+	if project_name == source_project_name:
 		frappe.throw(_("Use a name that is different from previous project name"))
 
-	# change the copied doc name to new project name
+	# the new project is named by its naming series, not by project_name
 	project = frappe.copy_doc(prev_doc)
-	project.name = project_name
 	project.project_template = ""
 	project.project_name = project_name
+	# the copy starts afresh like its tasks; a Completed status would also turn a project without
+	# tasks yet into a Manual 100% one
+	project.status = "Open"
+	project.percent_complete = 0
 	project.insert()
 
-	# fetch all the task linked with the old project
-	task_list = frappe.get_all("Task", filters={"project": prev_doc.get("name")}, fields=["name"])
-
-	# Create duplicate task for all the task
-	for task in task_list:
-		task = frappe.get_doc("Task", task)
-		new_task = frappe.copy_doc(task)
-		new_task.project = project.name
-		new_task.insert()
+	copy_tasks(source_name, project.name)
+	project.update_project()
 
 	project.db_set("project_template", prev_doc.get("project_template"))
+	return project.name
+
+
+def copy_tasks(source_project: str, target_project: str) -> None:
+	"""Copy the tasks of a project as fresh, open tasks, re-pointing parent tasks and
+	dependencies within the project to their copies.
+
+	Each copy is inserted once, after the copies it links to, so no task is read or saved again."""
+	# stored columns only, leaving out assignments, likes etc. (the underscored ones)
+	fields = [f for f in frappe.get_meta("Task").get_valid_columns() if not f.startswith("_")]
+	source_tasks = {
+		task.name: task
+		for task in frappe.get_all("Task", filters={"project": source_project}, fields=fields, order_by="lft")
+	}
+	if not source_tasks:
+		return
+
+	depends_on = {name: [] for name in source_tasks}
+	for row in frappe.get_all(
+		"Task Depends On",
+		filters={"parenttype": "Task", "parent": ["in", list(source_tasks)]},
+		fields=["parent", "task"],
+		order_by="idx",
+	):
+		# a parent task depends on its subtasks through rows that Task adds back itself
+		# as each subtask copy is inserted
+		subtask = source_tasks.get(row.task)
+		if not (subtask and subtask.parent_task == row.parent):
+			depends_on[row.parent].append(row.task)
+
+	copied, deferred = {}, {}
+
+	def link(task):
+		"""The copy of a task in this project, or the task itself if it is outside the project."""
+		return copied.get(task, task if task not in source_tasks else None)
+
+	for name in get_copy_order(source_tasks, depends_on):
+		# drop progress, actuals, costing etc. (the no_copy fields)
+		new_task = frappe.copy_doc({**source_tasks[name], "doctype": "Task"}, ignore_no_copy=False)
+		parent_task = new_task.parent_task
+		new_task.update(
+			{
+				"project": target_project,
+				"status": "Open",
+				"completed_on": None,
+				# placed in the task tree afresh
+				"lft": None,
+				"rgt": None,
+				"old_parent": None,
+				"parent_task": link(parent_task) if parent_task else None,
+			}
+		)
+		for task in depends_on[name]:
+			if link(task):
+				new_task.append("depends_on", {"task": link(task)})
+		# the project is updated once all tasks are copied
+		new_task.flags.from_project = True
+		new_task.insert()
+		copied[name] = new_task.name
+
+		# only when links loop through parent tasks, e.g. a task depending on a subtask of its subtask
+		if (parent_task and not new_task.parent_task) or len(new_task.depends_on) < len(depends_on[name]):
+			deferred[name] = parent_task
+
+	for name, parent_task in deferred.items():
+		new_task = frappe.get_doc("Task", copied[name])
+		new_task.parent_task = link(parent_task) if parent_task else None
+		# appended, keeping the rows for its subtasks that were added meanwhile
+		linked = {row.task for row in new_task.depends_on}
+		for task in depends_on[name]:
+			if link(task) not in linked:
+				new_task.append("depends_on", {"task": link(task)})
+		new_task.flags.from_project = True
+		new_task.save()
+
+
+def get_copy_order(tasks: dict, depends_on: dict[str, list[str]]) -> list[str]:
+	"""Order tasks so each comes after its parent task and the tasks it depends on."""
+
+	def linked_tasks(name):
+		return iter((tasks[name].parent_task, *depends_on[name]))
+
+	ordered, visited = [], set()
+	for start in tasks:
+		if start in visited:
+			continue
+		visited.add(start)
+		stack = [(start, linked_tasks(start))]
+		while stack:
+			name, links = stack[-1]
+			for linked in links:
+				if linked in tasks and linked not in visited:
+					visited.add(linked)
+					stack.append((linked, linked_tasks(linked)))
+					break
+			else:
+				stack.pop()
+				ordered.append(name)
+
+	return ordered
 
 
 def get_projects_for_collect_progress(frequency, fields):
