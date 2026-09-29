@@ -2584,10 +2584,10 @@ class StockEntry(StockController, SubcontractingInwardController):
 					pro_doc.remove_additional_items(self)
 
 				pro_doc.run_method("update_work_order_qty")
-				if self.purpose == "Manufacture":
-					pro_doc.run_method("update_planned_qty")
 
 			pro_doc.run_method("update_status")
+			if self.fg_completed_qty and self.purpose == "Manufacture":
+				pro_doc.run_method("update_planned_qty")
 			if not pro_doc.operations:
 				pro_doc.set_actual_dates()
 
@@ -2657,6 +2657,20 @@ class StockEntry(StockController, SubcontractingInwardController):
 			return True
 
 		return False
+
+	def before_sl_preview(self):
+		self.release_work_order_reservation_for_preview()
+
+	def before_gl_preview(self):
+		self.release_work_order_reservation_for_preview()
+
+	def release_work_order_reservation_for_preview(self):
+		"""Releases the Work Order's own reservation as submit does, inside the rolled-back preview."""
+		if not self.is_stock_reserve_for_work_order():
+			return
+
+		self.db_set("docstatus", 1, update_modified=False)
+		frappe.get_doc("Work Order", self.work_order).update_required_items()
 
 	def update_wo_reservation_for_subcontracting(self):
 		# A "Send to Subcontractor" entry never keeps its `work_order` (validate clears it for this
@@ -3689,9 +3703,6 @@ class StockEntry(StockController, SubcontractingInwardController):
 			row.stock_qty -= flt(used_secondary_items.get(key))
 			row.stock_qty = (row.stock_qty) * flt(self.fg_completed_qty) / flt(pending_qty)
 
-			if used_secondary_items.get(key):
-				used_secondary_items[key] -= row.stock_qty
-
 			if cint(frappe.get_cached_value("UOM", row.stock_uom, "must_be_whole_number")):
 				row.stock_qty = frappe.utils.ceil(row.stock_qty)
 
@@ -3705,7 +3716,7 @@ class StockEntry(StockController, SubcontractingInwardController):
 
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-		data = (
+		query = (
 			frappe.qb.from_(StockEntry)
 			.inner_join(StockEntryDetail)
 			.on(StockEntryDetail.parent == StockEntry.name)
@@ -3725,9 +3736,11 @@ class StockEntry(StockController, SubcontractingInwardController):
 				& (StockEntry.docstatus == 1)
 				& (StockEntry.purpose.isin(["Repack", "Manufacture"]))
 			)
-		).run(as_dict=1)
+		)
+		if self.job_card:
+			query = query.where(StockEntry.job_card == self.job_card)
 
-		for row in data:
+		for row in query.run(as_dict=1):
 			used_secondary_items[get_secondary_item_key(row)] += row.qty
 
 		return used_secondary_items

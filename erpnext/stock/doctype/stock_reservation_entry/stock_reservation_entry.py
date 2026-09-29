@@ -665,6 +665,10 @@ class StockReservationEntry(Document):
 
 			entry.db_update()
 
+	@property
+	def matched_serial_batch_qty(self):
+		return sum(min(flt(entry.delivered_qty), flt(entry.qty)) for entry in self.sb_entries)
+
 
 def validate_stock_reservation_settings(voucher: object) -> None:
 	"""Raises an exception if `Stock Reservation` is not enabled or `Voucher Type` is not allowed."""
@@ -956,6 +960,33 @@ def get_sre_reserved_serial_nos_details(
 		query = query.where(sb_entry.serial_no.isin(serial_nos))
 
 	return frappe._dict(query.run())
+
+
+def get_sre_reserved_serial_nos_for_voucher_detail_nos(voucher_type: str, voucher_detail_nos: list) -> dict:
+	"""Returns {voucher_detail_no: set of reserved Serial Nos}, including the delivered ones."""
+
+	sre = frappe.qb.DocType("Stock Reservation Entry")
+	sb_entry = frappe.qb.DocType("Serial and Batch Entry")
+	query = (
+		frappe.qb.from_(sre)
+		.inner_join(sb_entry)
+		.on(sre.name == sb_entry.parent)
+		.select(sre.voucher_detail_no, sb_entry.serial_no)
+		.distinct()
+		.where(
+			(sre.docstatus == 1)
+			& (sre.voucher_type == voucher_type)
+			& (sre.voucher_detail_no.isin(voucher_detail_nos))
+			& (sre.reservation_based_on == "Serial and Batch")
+			& (sb_entry.serial_no.isnotnull())
+		)
+	)
+
+	reserved_serial_nos = {}
+	for voucher_detail_no, serial_no in query.run():
+		reserved_serial_nos.setdefault(voucher_detail_no, set()).add(serial_no)
+
+	return reserved_serial_nos
 
 
 def get_sre_reserved_batch_nos_details(item_code: str, warehouse: str, batch_nos: list | None = None) -> dict:
@@ -1866,6 +1897,8 @@ def _get_stock_reservation_entries_for_voucher(
 			"voucher_detail_no",
 			"reserved_qty",
 			"delivered_qty",
+			"transferred_qty",
+			"consumed_qty",
 			"stock_uom",
 		]
 

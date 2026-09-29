@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: frappe\n"
 "Report-Msgid-Bugs-To: hello@frappe.io\n"
 "POT-Creation-Date: 2026-09-20 09:36+0000\n"
-"PO-Revision-Date: 2026-09-21 04:08\n"
+"PO-Revision-Date: 2026-09-28 04:08\n"
 "Last-Translator: hello@frappe.io\n"
 "Language-Team: Italian\n"
 "MIME-Version: 1.0\n"
@@ -18789,11 +18789,11 @@ msgstr ""
 
 #: erpnext/setup/doctype/employee/employee.py:440
 msgid "Email is required to create a user"
-msgstr ""
+msgstr "Per creare un utente è necessaria un'email"
 
 #: erpnext/setup/doctype/employee/employee.js:72
 msgid "Email is required to create a user."
-msgstr ""
+msgstr "Per creare un utente è necessaria un'email."
 
 #: erpnext/stock/doctype/shipment/shipment.js:174
 msgid "Email or Phone/Mobile of the Contact are mandatory to continue."
@@ -30161,7 +30161,7 @@ msgstr ""
 #: erpnext/stock/doctype/stock_entry_detail/stock_entry_detail.json
 #: erpnext/subcontracting/doctype/subcontracting_receipt_item/subcontracting_receipt_item.json
 msgid "Manual"
-msgstr "Manuale"
+msgstr ""
 
 #. Label of the manual_inspection (Check) field in DocType 'Quality Inspection'
 #. Label of the manual_inspection (Check) field in DocType 'Quality Inspection
@@ -43973,11 +43973,11 @@ msgstr ""
 #: banking/src/components/features/BankReconciliation/MatchAndReconcile.tsx:482
 #: banking/src/components/features/BankReconciliation/MatchAndReconcile.tsx:575
 msgid "Record a journal entry for expenses, income or split transactions"
-msgstr ""
+msgstr "Crea una registrazione contabile per costi, ricavi o transazioni suddivise"
 
 #: banking/src/components/features/BankReconciliation/BankEntryModal.tsx:19
 msgid "Record a journal entry for expenses, income or split transactions."
-msgstr ""
+msgstr "Crea una registrazione contabile per costi, ricavi o transazioni suddivise."
 
 #: banking/src/components/features/Settings/KeyboardShortcuts.tsx:23
 msgid "Record a payment against a customer or supplier"
@@ -44002,11 +44002,11 @@ msgstr ""
 #: banking/src/components/features/BankReconciliation/MatchAndReconcile.tsx:593
 #: banking/src/components/features/BankReconciliation/MatchAndReconcile.tsx:687
 msgid "Record an internal transfer to another bank/credit card/cash account"
-msgstr ""
+msgstr "Registra un trasferimento interno verso un altro conto bancario, carta di credito o cassa"
 
 #: banking/src/components/features/BankReconciliation/TransferModal.tsx:19
 msgid "Record an internal transfer to another bank/credit card/cash account."
-msgstr ""
+msgstr "Registra un trasferimento interno verso un altro conto bancario, carta di credito o cassa."
 
 #. Label of the recording_html (HTML) field in DocType 'Call Log'
 #: erpnext/telephony/doctype/call_log/call_log.json
@@ -44101,7 +44101,7 @@ msgstr ""
 #: banking/src/components/features/BankReconciliation/MatchAndReconcile.tsx:364
 #: banking/src/components/features/BankReconciliation/SelectedTransactionDetails.tsx:63
 msgid "Ref"
-msgstr ""
+msgstr "Rif"
 
 #. Label of the ref_code (Data) field in DocType 'Item Customer Detail'
 #: erpnext/stock/doctype/item_customer_detail/item_customer_detail.json
@@ -44115,7 +44115,7 @@ msgstr ""
 #: banking/src/components/features/BankStatementImporter/CSV/StatementDetails.tsx:252
 #: banking/src/components/features/BankStatementImporter/CSV/StatementDetails.tsx:319
 msgid "Ref."
-msgstr ""
+msgstr "Rif."
 
 #: banking/src/components/features/BankReconciliation/BankReconciliationStatement.tsx:155
 #: banking/src/components/features/BankReconciliation/BankTransactionList.tsx:82
@@ -57302,7 +57302,7 @@ msgstr "Anticipo Totale"
 
 #: erpnext/public/js/utils.js:250
 msgid "Total Advance Paid"
-msgstr ""
+msgstr "Totale anticipi versati"
 
 #: erpnext/public/js/utils.js:195
 msgid "Total Advance Paid: {0}"
@@ -57310,7 +57310,7 @@ msgstr ""
 
 #: erpnext/public/js/utils.js:252
 msgid "Total Advance Received"
-msgstr ""
+msgstr "Totale anticipi ricevuti"
 
 #: erpnext/public/js/utils.js:198
 msgid "Total Advance Received: {0}"
@@ -60719,11 +60719,11 @@ msgstr ""
 
 #: banking/src/components/features/Settings/KeyboardShortcuts.tsx:55
 msgid "View all reconciliation actions taken in this session"
-msgstr ""
+msgstr "Visualizza tutte le azioni di riconciliazione eseguite in questa sessione"
 
 #: banking/src/components/features/ActionLog/ActionLogDialog.tsx:20
 msgid "View all reconciliation actions taken in this session."
-msgstr ""
+msgstr "Visualizza tutte le azioni di riconciliazione eseguite in questa sessione."
 
 #. Label of the view_attachments (Check) field in DocType 'Project User'
 #: erpnext/projects/doctype/project_user/project_user.json
@@ -61761,19 +61761,19 @@ msgstr ""
 
 #: banking/src/components/features/Settings/Preferences.tsx:71
 msgid "Within 2 days"
-msgstr ""
+msgstr "Entro 2 giorni"
 
 #: banking/src/components/features/Settings/Preferences.tsx:72
 msgid "Within 3 days"
-msgstr ""
+msgstr "Entro 3 giorni"
 
 #: banking/src/components/features/Settings/Preferences.tsx:73
 msgid "Within 4 days"
-msgstr ""
+msgstr "Entro 4 giorni"
 
 #: banking/src/components/features/Settings/Preferences.tsx:74
 msgid "Within 5 days"
-msgstr ""
+msgstr "Entro 5 giorni"
 
 #. Label of a chart in the CRM Workspace
 #: erpnext/crm/workspace/crm/crm.json
