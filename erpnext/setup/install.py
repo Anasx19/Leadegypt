@@ -40,6 +40,7 @@ def after_install():
 	set_default_print_formats()
 	create_letter_head()
 	toggle_hidden_fields()
+	grant_address_read_to_accounts_manager()
 	frappe.db.commit()
 
 
@@ -432,6 +433,89 @@ DEFAULT_ROLE_PROFILES = {
 		"Purchase Manager",
 	],
 }
+
+
+def grant_address_read_to_accounts_manager():
+	"""
+	Give Accounts Manager read on Address, which the Tax Rule party lookup requires, unless the site already
+	has any rule for that pair or an administrator changed one before.
+	"""
+	if not frappe.db.exists("Role", "Accounts Manager"):
+		return
+	if has_address_rule() or has_changed_address_rule():
+		print("Address / Accounts Manager: kept, this site already rules on this pair")
+		return
+	add_address_read_rule()
+
+
+def has_address_rule() -> bool:
+	"""
+	Return whether Accounts Manager already has a rule on Address at any level, in Custom DocPerm on a
+	customised site or in the shipped DocPerm rows otherwise.
+	"""
+	if frappe.db.exists("Custom DocPerm", {"parent": "Address"}):
+		return bool(frappe.db.exists("Custom DocPerm", {"parent": "Address", "role": "Accounts Manager"}))
+	return bool(frappe.db.exists("DocPerm", {"parent": "Address", "role": "Accounts Manager"}))
+
+
+def has_changed_address_rule() -> bool:
+	"""
+	Return whether Permission Log records an administrator editing or deleting an Accounts Manager rule on
+	Address, a decision the grant must respect rather than undo.
+	"""
+	for log in get_address_change_logs():
+		if "Accounts Manager" in get_logged_roles(log):
+			return True
+	return False
+
+
+def get_address_change_logs() -> list:
+	"""
+	Return the Permission Log entries for edited or removed Custom DocPerm rules on Address, with the
+	changes JSON and the referenced rule, or none when the log is not installed.
+	"""
+	if not frappe.db.exists("DocType", "Permission Log"):
+		return []
+	return frappe.get_all(
+		"Permission Log",
+		filters={
+			"for_doctype": "DocType",
+			"for_document": "Address",
+			"reference_type": "Custom DocPerm",
+			"status": ["in", ["Updated", "Removed"]],
+		},
+		fields=["changes", "reference"],
+	)
+
+
+def get_logged_roles(log) -> set:
+	"""
+	Return every role a Permission Log entry concerns: both sides of a role change, the removed role, or the
+	referenced rule's role when an edit did not record one.
+	"""
+	changes = frappe.parse_json(log.changes) or {}
+	roles = set()
+	for side in ("from", "to"):
+		role = (changes.get(side) or {}).get("role")
+		if role:
+			roles.add(role)
+	if roles:
+		return roles
+	role = frappe.db.get_value("Custom DocPerm", log.reference, "role")
+	return {role} if role else set()
+
+
+def add_address_read_rule():
+	"""
+	Add the rule with add_permission, which first copies Address's shipped rules so no other role loses
+	access, then turn off the export right Custom DocPerm defaults to on.
+	"""
+	from frappe.permissions import add_permission, update_permission_property
+
+	add_permission("Address", "Accounts Manager", 0, "read")
+	update_permission_property("Address", "Accounts Manager", 0, "export", 0)
+	frappe.clear_cache(doctype="Address")
+	print("Address / Accounts Manager: added read")
 
 
 def after_app_install(app_name=None):

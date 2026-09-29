@@ -13,6 +13,7 @@ from frappe.query_builder.functions import IfNull
 from frappe.utils import cstr
 from frappe.utils.nestedset import get_root_of
 
+from erpnext import require_permission
 from erpnext.setup.doctype.customer_group.customer_group import get_parent_customer_groups
 from erpnext.setup.doctype.supplier_group.supplier_group import get_parent_supplier_groups
 
@@ -142,42 +143,64 @@ class TaxRule(Document):
 
 @frappe.whitelist()
 def get_party_details(party, party_type, args=None):
+	"""Return the city, state and country of the party's billing and shipping addresses, after requiring
+	read on each Address it loads. Tax lookup on transactions calls get_tax_rule_party_details()."""
+	address_names = get_party_address_names(party, party_type, args)
+	for address_name in address_names:
+		if address_name:
+			require_permission("Address", address_name, "read")
+
+	return get_address_details(*address_names)
+
+
+def get_tax_rule_party_details(party, party_type, args=None):
+	"""Return the party's address details for tax rule matching without a permission check, because it runs
+	inside document and portal flows whose callers need not read the Address itself."""
+	return get_address_details(*get_party_address_names(party, party_type, args))
+
+
+def get_party_address_names(party, party_type, args=None) -> tuple:
+	"""Return the billing and shipping Address names to use: those named in `args`, else the party's
+	defaults. A non-string address in `args` is rejected, since it would act as a filter."""
+	if not args:
+		return (
+			get_default_address(party_type, party),
+			get_default_address(party_type, party, "is_shipping_address"),
+		)
+
+	# each names a single Address: a dict is read as a filter and get_doc would resolve it to
+	# whichever Address matched.
+	for fieldname in ("billing_address", "shipping_address"):
+		if args.get(fieldname) and not isinstance(args.get(fieldname), str):
+			frappe.throw(_("Invalid address"), frappe.PermissionError)
+
+	return args.get("billing_address"), args.get("shipping_address")
+
+
+def get_address_details(billing_address_name=None, shipping_address_name=None) -> dict:
+	"""Return the city, county, state, pincode and country of the named billing and shipping Addresses,
+	under the billing_ and shipping_ keys that tax rules match on."""
 	out = {}
-	billing_address, shipping_address = None, None
-	if args:
-		# each names a single Address: a dict is read as a filter and get_doc would resolve it to
-		# whichever Address matched.
-		for fieldname in ("billing_address", "shipping_address"):
-			if args.get(fieldname) and not isinstance(args.get(fieldname), str):
-				frappe.throw(_("Invalid address"), frappe.PermissionError)
+	if billing_address_name:
+		out.update(get_address_fields(billing_address_name, "billing"))
 
-		if args.get("billing_address"):
-			billing_address = frappe.get_doc("Address", args.get("billing_address"))
-		if args.get("shipping_address"):
-			shipping_address = frappe.get_doc("Address", args.get("shipping_address"))
-	else:
-		billing_address_name = get_default_address(party_type, party)
-		shipping_address_name = get_default_address(party_type, party, "is_shipping_address")
-		if billing_address_name:
-			billing_address = frappe.get_doc("Address", billing_address_name)
-		if shipping_address_name:
-			shipping_address = frappe.get_doc("Address", shipping_address_name)
-
-	if billing_address:
-		out["billing_city"] = billing_address.city
-		out["billing_county"] = billing_address.county
-		out["billing_state"] = billing_address.state
-		out["billing_zipcode"] = billing_address.pincode
-		out["billing_country"] = billing_address.country
-
-	if shipping_address:
-		out["shipping_city"] = shipping_address.city
-		out["shipping_county"] = shipping_address.county
-		out["shipping_state"] = shipping_address.state
-		out["shipping_zipcode"] = shipping_address.pincode
-		out["shipping_country"] = shipping_address.country
+	if shipping_address_name:
+		out.update(get_address_fields(shipping_address_name, "shipping"))
 
 	return out
+
+
+def get_address_fields(address_name, prefix) -> dict:
+	"""Return one Address's city, county, state, pincode and country, keyed with `prefix` the way the Tax
+	Rule form and tax template matching expect them."""
+	address = frappe.get_doc("Address", address_name)
+	return {
+		f"{prefix}_city": address.city,
+		f"{prefix}_county": address.county,
+		f"{prefix}_state": address.state,
+		f"{prefix}_zipcode": address.pincode,
+		f"{prefix}_country": address.country,
+	}
 
 
 def get_tax_template(posting_date, args):
